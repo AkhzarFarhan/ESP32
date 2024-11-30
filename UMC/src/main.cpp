@@ -3,12 +3,14 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
+#include "network.h"
 
 
 // Define the DHT sensor type and the GPIO pin
 #define DHTPIN 4 // GPIO pin connected to the DHT sensor (change as needed)
 #define DHTTYPE DHT11 // DHT11 or DHT22
 DHT dht(DHTPIN, DHTTYPE);
+float tempC, tempF, humidity;
 
 
 // OLED display settings
@@ -19,31 +21,90 @@ DHT dht(DHTPIN, DHTTYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 
-class OLED_Display
-{
-    private:
-        /* data */
-    public:
-        OLED_Display(/* args */);
-        ~OLED_Display();
-};
-
-OLED_Display::OLED_Display(/* args */)
-{
-}
-
-OLED_Display::~OLED_Display()
-{
-}
-
+// Network instance
+Network network;
 
 
 void setup()
 {
+    // Initialize serial communication
+    Serial.begin(115200);
+    Serial.println(F("DHT Temperature and Humidity Sensor Test"));
+    Serial.println(F("DHT Sensor with OLED Display"));
 
+    // Start the DHT sensor
+    dht.begin();
+
+    // Initialize the OLED display
+    if (!display.begin(SSD1306_BLACK, OLED_ADDRESS))
+    { // Default I2C address is 0x3C
+        Serial.println(F("SSD1306 allocation failed"));
+        for (;;); // Halt the program
+    }
+
+    // Clear the display
+    display.clearDisplay();
+    display.display();
+
+    // Display startup message
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println(F("Booting..."));
+    display.display();
+    delay(2000);
 }
 
 void loop()
 {
+    // Wait a few seconds between measurements
+    delay(2000);
 
+    // Read temperature and humidity values
+    humidity = dht.readHumidity();
+    tempC = dht.readTemperature(); // Celsius
+    tempF = dht.readTemperature(true); // Fahrenheit
+
+    // Check if any reads failed
+    if (isnan(humidity) || isnan(temperature) || isnan(temperatureF))
+    {
+        Serial.println(F("Failed to read from DHT sensor!"));
+        // Display error message on OLED
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.println(F("Error reading sensor"));
+        display.display();
+        network.fill(0, 0, 0);
+        network.send();
+        return;
+    }
+
+    // Send DHT data to Network
+    network.fill(tempC, tempF, humidity);
+    network.send();
+
+    // Print the results
+    Serial.print(F("Humidity: "));
+    Serial.print(humidity);
+    Serial.print(F("%  Temperature: "));
+    Serial.print(temperature);
+    Serial.print(F("°C "));
+    Serial.print(temperatureF);
+    Serial.println(F("°F"));
+
+    // Display readings on OLED
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println(F("DHT Sensor Readings:"));
+    display.setTextSize(2);
+    display.setCursor(0, 16);
+    display.print(F("T: "));
+    display.print(temperature);
+    display.println(F(" C"));
+    display.setCursor(0, 40);
+    display.print(F("H: "));
+    display.print(humidity);
+    display.println(F("%"));
+    display.display();
 }
