@@ -3,27 +3,20 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
+#include <WiFi.h>
+#include <time.h>
 #include "network.h"
 #include "constant.h"
+#include "logger.h"
 
 
-// Define the DHT sensor type and the GPIO pin
-#define DHTPIN 4 // GPIO pin connected to the DHT sensor (change as needed)
 #define DHTTYPE DHT11 // DHT11 or DHT22
 DHT dht(DHTPIN, DHTTYPE);
-float tempC, tempF, humidity;
-
-
-// OLED display settings
-#define SCREEN_WIDTH 128 // OLED display width in pixels
-#define SCREEN_HEIGHT 64 // OLED display height in pixels
-#define OLED_RESET -1 // Reset pin (set to -1 if not used)
-#define OLED_ADDRESS 0x3C // I2C address for the OLED display (0x3C or 0x3D)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-
-
-// Network instance
 Network network;
+float tempC, tempF, humidity;
+time_t timestamp = time(nullptr);
+
 
 
 void setup()
@@ -46,6 +39,15 @@ void setup()
     // Clear the display
     display.clearDisplay();
     display.display();
+
+        // Connect to WiFi
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(DELAY);
+        Serial.println("Connecting to WiFi...");
+    }
+    Serial.println("Connected to WiFi");
 
     // Display startup message
     display.setTextSize(1);
