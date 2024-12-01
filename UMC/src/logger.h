@@ -29,6 +29,7 @@ class Logger
             std::lock_guard<std::mutex> lock(mutex_);
             if (logQueue.empty())
             {
+                message = "No log";
                 return false;
             }
             message = logQueue.front();

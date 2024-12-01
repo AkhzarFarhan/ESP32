@@ -4,7 +4,11 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <string>
 #include "constant.h"
+#include "logger.h"
+
+Logger logger;
 
 class Network
 {
@@ -12,8 +16,9 @@ class Network
         float tempC;
         float tempF;
         float humidity;
+        std::string log;
     public:
-        Network() : tempC(0.0), tempF(0.0), humidity(0.0) {}
+        Network() : tempC(0.0), tempF(0.0), humidity(0.0), log("No log") {}
         ~Network() {}
 
         void set(float tempC, float tempF, float humidity)
@@ -21,6 +26,7 @@ class Network
             this->tempC = tempC;
             this->tempF = tempF;
             this->humidity = humidity;
+            logger.getLog(log);
         }
         void reset()
         {
@@ -33,7 +39,7 @@ class Network
             if (WiFi.status() == WL_CONNECTED)
             {
                 HTTPClient http;
-                http.begin(API_ENDPOINT); // Replace with your API endpoint
+                http.begin(API_ENDPOINT);
 
                 http.addHeader("Content-Type", "application/json");
 
@@ -42,6 +48,7 @@ class Network
                 jsonDoc["temperatureC"] = tempC;
                 jsonDoc["temperatureF"] = tempF;
                 jsonDoc["humidity"] = humidity;
+                jsonDoc["log"] = log;
 
                 // Serialize JSON object to string
                 String jsonString;

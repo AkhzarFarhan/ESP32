@@ -16,7 +16,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Network network;
 float tempC, tempF, humidity;
 time_t timestamp = time(nullptr);
-
+Logger logger;
 
 
 void setup()
