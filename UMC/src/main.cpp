@@ -4,6 +4,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Arduino.h>
 #include "network.h"
+#include "constant.h"
 
 
 // Define the DHT sensor type and the GPIO pin
@@ -28,7 +29,7 @@ Network network;
 void setup()
 {
     // Initialize serial communication
-    Serial.begin(115200);
+    Serial.begin(BAUD_RATE);
     Serial.println(F("DHT Temperature and Humidity Sensor Test"));
     Serial.println(F("DHT Sensor with OLED Display"));
 
@@ -52,13 +53,13 @@ void setup()
     display.setCursor(0, 0);
     display.println(F("Booting..."));
     display.display();
-    delay(2000);
+    delay(DELAY);
 }
 
 void loop()
 {
     // Wait a few seconds between measurements
-    delay(2000);
+    delay(DELAY);
 
     // Read temperature and humidity values
     humidity = dht.readHumidity();
@@ -66,7 +67,7 @@ void loop()
     tempF = dht.readTemperature(true); // Fahrenheit
 
     // Check if any reads failed
-    if (isnan(humidity) || isnan(temperature) || isnan(temperatureF))
+    if (isnan(humidity) || isnan(tempC) || isnan(tempF))
     {
         Serial.println(F("Failed to read from DHT sensor!"));
         // Display error message on OLED
@@ -74,22 +75,22 @@ void loop()
         display.setCursor(0, 0);
         display.println(F("Error reading sensor"));
         display.display();
-        network.fill(0, 0, 0);
+        network.set(0, 0, 0);
         network.send();
         return;
     }
 
     // Send DHT data to Network
-    network.fill(tempC, tempF, humidity);
+    network.set(tempC, tempF, humidity);
     network.send();
 
     // Print the results
     Serial.print(F("Humidity: "));
     Serial.print(humidity);
     Serial.print(F("%  Temperature: "));
-    Serial.print(temperature);
+    Serial.print(tempC);
     Serial.print(F("°C "));
-    Serial.print(temperatureF);
+    Serial.print(tempF);
     Serial.println(F("°F"));
 
     // Display readings on OLED
@@ -100,7 +101,7 @@ void loop()
     display.setTextSize(2);
     display.setCursor(0, 16);
     display.print(F("T: "));
-    display.print(temperature);
+    display.print(tempC);
     display.println(F(" C"));
     display.setCursor(0, 40);
     display.print(F("H: "));

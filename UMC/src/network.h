@@ -1,6 +1,8 @@
 #ifndef NETWORK_H
 #define NETWORK_H
 
+#include <WiFi.h>
+#include <HTTPClient.h>
 
 class Network
 {
@@ -12,7 +14,8 @@ class Network
         Network();
         ~Network();
 
-        void fill(float tempC, float tempF, float humidity);
+        void set(float tempC, float tempF, float humidity);
+        void reset();
         void send();
         void receive();
 };
