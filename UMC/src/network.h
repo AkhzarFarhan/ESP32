@@ -8,7 +8,8 @@
 #include "constant.h"
 #include "logger.h"
 
-Logger logger;
+extern Logger& logger;
+extern time_t timestamp;
 
 class Network
 {
@@ -39,6 +40,28 @@ class Network
             if (WiFi.status() == WL_CONNECTED)
             {
                 HTTPClient http;
+                
+                // Send message to Telegram
+                String tg_url = String(TG_BASE) + "*Timestamp: *" + String(timestamp) + "%0A*Temperature: *" + String(tempC) + "%0A*Humidity: *" + String(humidity) + "%0A*Log: *" + String(log.c_str());
+                tg_url += "&parse_mode=markdown";
+
+                http.begin(tg_url);
+                int httpResponseCode = http.GET();
+
+                if (httpResponseCode > 0)
+                {
+                    String response = http.getString();
+                    //logger.log("Telegram Response code: " + String(httpResponseCode));
+                    //logger.log("Response: " + response);
+                }
+                else
+                {
+                    //logger.log("Error on sending GET to Telegram: " + String(httpResponseCode));
+                }
+
+                http.end(); // Free resources
+
+                /*
                 http.begin(API_ENDPOINT);
 
                 http.addHeader("Content-Type", "application/json");
@@ -49,9 +72,11 @@ class Network
                 jsonDoc["temperatureF"] = tempF;
                 jsonDoc["humidity"] = humidity;
                 jsonDoc["log"] = log;
+                jsonDoc["timestamp"] = timestamp;
 
                 // Serialize JSON object to string
                 String jsonString;
+
                 serializeJson(jsonDoc, jsonString);
 
                 // Send HTTP POST request
@@ -70,6 +95,7 @@ class Network
                 }
 
                 http.end(); // Free resources
+                */
             }
             else
             {

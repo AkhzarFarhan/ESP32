@@ -15,16 +15,17 @@ DHT dht(DHTPIN, DHTTYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Network network;
 float tempC, tempF, humidity;
-time_t timestamp = time(nullptr);
-Logger logger;
+time_t timestamp;
+struct tm timeinfo;
+Logger& logger = Logger::getInstance();
 
 
 void setup()
 {
     // Initialize serial communication
     Serial.begin(BAUD_RATE);
-    Serial.println(F("DHT Temperature and Humidity Sensor Test"));
-    Serial.println(F("DHT Sensor with OLED Display"));
+    logger.log("DHT Temperature and Humidity Sensor Test");
+    logger.log("DHT Sensor with OLED Display");
 
     // Start the DHT sensor
     dht.begin();
@@ -32,7 +33,7 @@ void setup()
     // Initialize the OLED display
     if (!display.begin(SSD1306_BLACK, OLED_ADDRESS))
     { // Default I2C address is 0x3C
-        Serial.println(F("SSD1306 allocation failed"));
+        logger.log("SSD1306 allocation failed");
         for (;;); // Halt the program
     }
 
@@ -45,15 +46,28 @@ void setup()
     while (WiFi.status() != WL_CONNECTED)
     {
         delay(DELAY);
-        Serial.println("Connecting to WiFi...");
+        logger.log("Connecting to WiFi...");
     }
-    Serial.println("Connected to WiFi");
+    logger.log("Connected to WiFi");
+
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    logger.log("Time sync started...");
+
+    // Wait for time to synchronize
+    if (!getLocalTime(&timeinfo))
+    {
+        logger.log("Failed to obtain time");
+    }
+    logger.log("Time synced");
+    timestamp = time(nullptr);
 
     // Display startup message
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
     display.println(F("Booting..."));
+    timestamp = time(nullptr);
+    logger.log("Booting...");
     display.display();
     delay(DELAY);
 }
@@ -71,11 +85,12 @@ void loop()
     // Check if any reads failed
     if (isnan(humidity) || isnan(tempC) || isnan(tempF))
     {
-        Serial.println(F("Failed to read from DHT sensor!"));
+        logger.log("Failed to read from DHT sensor!");
         // Display error message on OLED
         display.clearDisplay();
         display.setCursor(0, 0);
         display.println(F("Error reading sensor"));
+        logger.log("Error in reading sensor");
         display.display();
         network.set(0, 0, 0);
         network.send();
@@ -83,8 +98,11 @@ void loop()
     }
 
     // Send DHT data to Network
+    timestamp = time(nullptr);
     network.set(tempC, tempF, humidity);
+    // logger.log("DHT values set");
     network.send();
+    // logger.log("DHT values sent");
 
     // Print the results
     Serial.print(F("Humidity: "));
