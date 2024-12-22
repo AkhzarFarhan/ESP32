@@ -78,6 +78,12 @@ void loop()
         display.display();
     }
 
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(DELAY*6);
+        logger.log("Connecting to WiFi...");
+    }
+
     // Read temperature and humidity values
     humidity = dht.readHumidity();
     tempC = dht.readTemperature(); // Celsius
