@@ -24,7 +24,6 @@ const char* SERVER_IP = "192.168.29.138";      // The IP of your PC or Termux ta
 const char* FIREBASE_HOST = "https://openware-ai-default-rtdb.firebaseio.com/ESP32/"; // Your Firebase DB URL
 const char* FIREBASE_SECRET = "YOUR_DATABASE_SECRET"; // Your Firebase DB Secret
 
-
 // =================================================================
 // --- REINFORCEMENT LEARNING & MODEL PARAMETERS ---
 // =================================================================
@@ -43,20 +42,21 @@ float weights[NUM_ACTIONS][NUM_FEATURES];
 // Forward Declarations
 void updateDisplayStats(int episode, int steps, float epsilon, const char* status_override = nullptr);
 float getQValue(float* features_in, int action);
-String httpGETRequest(const char* url);
-bool getWeightsFromFirebase();
-void updateWeightInFirebase(int action, int feature_index, float value);
-int chooseAction(float* features_in);
 float getMaxQValue(float* features_in);
+int chooseAction(float* features_in);
+String httpGETRequest(const char* url);
+void updateAllWeightsInFirebase();
+bool getWeightsFromFirebase();
 void connectToWiFi();
-void getFeatures(JsonDocument& doc, float* features_out);
 void runEpisode(int episode);
+void getFeatures(JsonDocument& doc, float* features_out);
 
 
 // =================================================================
 // SETUP
 // =================================================================
-void setup() {
+void setup()
+{
     Serial.begin(115200);
     randomSeed(analogRead(0));
 
@@ -94,6 +94,9 @@ void loop()
         getWeightsFromFirebase();
 
         runEpisode(episode);
+
+        // **OPTIMIZATION**: Push all accumulated changes to Firebase ONCE per episode.
+        updateAllWeightsInFirebase();
 
         // Decay epsilon
         epsilon *= EPSILON_DECAY;
@@ -148,20 +151,15 @@ void runEpisode(int episode)
             max_q_next_state = getMaxQValue(next_features);
         }
 
-        // 6. Update the local weights cache and sync the change to Firebase
+        // 6. Update the LOCAL weights cache. No network call here.
         float error = (reward + GAMMA * max_q_next_state) - current_q;
         for (int i = 0; i < NUM_FEATURES; ++i)
         {
-            float old_weight = weights[action][i];
             weights[action][i] += ALPHA * error * features[i];
-            // Only push update if the weight changed significantly
-            if (abs(weights[action][i] - old_weight) > 1e-6)
-            {
-                updateWeightInFirebase(action, i, weights[action][i]);
-            }
         }
         steps++;
         if (steps > 800) done = true; // Timeout to prevent infinite loops
+        updateDisplayStats(action, steps, current_q);
     }
     updateDisplayStats(episode, steps, epsilon);
 }
@@ -169,7 +167,8 @@ void runEpisode(int episode)
 /**
  * @brief Extracts and normalizes features from the drone's state.
  */
-void getFeatures(JsonDocument& doc, float* features_out) {
+void getFeatures(JsonDocument& doc, float* features_out)
+{
     float x = doc["x"], y = doc["y"], vx = doc["vx"], vy = doc["vy"];
     float target_x = doc["target_x"], target_y = doc["target_y"];
 
@@ -183,6 +182,11 @@ void getFeatures(JsonDocument& doc, float* features_out) {
     features_out[7] = 1.0;                   // Bias term
 }
 
+// --- Q-VALUE & ACTION SELECTION FUNCTIONS (Identical to previous advanced version) ---
+float getQValue(float* features_in, int action);
+float getMaxQValue(float* features_in);
+int chooseAction(float* features_in);
+
 
 // =================================================================
 // --- FIREBASE COMMUNICATION ---
@@ -191,7 +195,8 @@ void getFeatures(JsonDocument& doc, float* features_out) {
  * @brief Fetches the entire weights structure from Firebase and loads it into the local cache.
  * @return True on success, False on failure.
  */
-bool getWeightsFromFirebase() {
+bool getWeightsFromFirebase()
+{
     HTTPClient http;
     String url = String(FIREBASE_HOST) + "/drone_weights.json?auth=" + String(FIREBASE_SECRET);
     http.begin(url);
@@ -199,7 +204,15 @@ bool getWeightsFromFirebase() {
 
     if (httpCode == 200) {
         JsonDocument doc;
-        deserializeJson(doc, http.getString());
+        // Increase JSON buffer size for fetching the whole model
+        DeserializationError error = deserializeJson(doc, http.getString());
+        if (error) {
+            Serial.print(F("deserializeJson() failed: "));
+            Serial.println(error.c_str());
+            http.end();
+            return false;
+        }
+
         if (doc.isNull()) { // Handle case where DB is empty
             http.end();
             return false;
@@ -217,20 +230,44 @@ bool getWeightsFromFirebase() {
 }
 
 /**
- * @brief Updates a single weight value in Firebase using a PATCH request.
+ * @brief (DEPRECATED) Updates a single weight value in Firebase. No longer used.
  */
-void updateWeightInFirebase(int action, int feature_index, float value) {
+// void updateWeightInFirebase(int action, int feature_index, float value) { ... }
+
+
+/**
+ * @brief **NEW FUNCTION**
+ * Serializes the entire local weights cache to a JSON object and sends it
+ * to Firebase in a single PUT request, overwriting the old data.
+ */
+void updateAllWeightsInFirebase()
+{
+    JsonDocument doc;
+
+    for (int i = 0; i < NUM_ACTIONS; ++i)
+    {
+        JsonObject action_obj = doc[String(i)].to<JsonObject>();
+        for (int j = 0; j < NUM_FEATURES; ++j)
+        {
+            action_obj[String(j)] = weights[i][j];
+        }
+    }
+
+    String payload;
+    serializeJson(doc, payload);
+
     HTTPClient http;
-    String url = String(FIREBASE_HOST) + "/drone_weights/" + String(action) + "/" + String(feature_index) + ".json?auth=" + String(FIREBASE_SECRET);
+    String url = String(FIREBASE_HOST) + "/drone_weights.json?auth=" + String(FIREBASE_SECRET);
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
-    
-    // A PUT request with a single value is the simplest way to update a specific leaf
-    char payload[10];
-    dtostrf(value, 4, 4, payload);
-    http.PUT(payload);
+
+    int httpCode = http.PUT(payload);
+    if (httpCode <= 0) {
+        Serial.printf("[HTTP] PUT failed, error: %s\n", http.errorToString(httpCode).c_str());
+    }
     http.end();
 }
+
 
 // =================================================================
 // --- UTILITIES (OLED, WiFi, HTTP) ---
@@ -239,6 +276,7 @@ void updateDisplayStats(int episode, int steps, float epsilon, const char* statu
 {
     display.clearDisplay();
     display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
 
     if (status_override)
@@ -261,25 +299,48 @@ void updateDisplayStats(int episode, int steps, float epsilon, const char* statu
 
     display.display();
 }
-String httpGETRequest(const char* url) {
+
+String httpGETRequest(const char* url)
+{
     HTTPClient http;
     http.begin(url);
+    http.setTimeout(2000);
     int httpCode = http.GET();
-    String payload = "";
-
-    if (httpCode > 0) {
-        if (httpCode == HTTP_CODE_OK) {
-            payload = http.getString();
-        }
-    } else {
-        Serial.printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str());
-        updateDisplayStats(0, 0, 0, "HTTP GET Failed");
+    String payload = (httpCode > 0) ? http.getString() : "";
+    if (httpCode <= 0) {
+        Serial.printf("[HTTP] GET failed, error: %s\n", http.errorToString(httpCode).c_str());
     }
     http.end();
     return payload;
 }
+
+
 // --- Stubs for reused functions to keep the file complete ---
 float getQValue(float* features_in, int action) { float q = 0.0; for (int i = 0; i < NUM_FEATURES; ++i) q += weights[action][i] * features_in[i]; return q; }
 float getMaxQValue(float* features_in) { float max_q = -1e9; for (int i = 0; i < NUM_ACTIONS; ++i) max_q = max(max_q, getQValue(features_in, i)); return max_q; }
 int chooseAction(float* features_in) { if ((float)random(1000)/1000.0 < epsilon) return random(0, NUM_ACTIONS); else { int best_action = 0; float max_q = -1e9; for (int i = 0; i < NUM_ACTIONS; ++i) { float q = getQValue(features_in, i); if (q > max_q) { max_q = q; best_action = i; } } return best_action; } }
-void connectToWiFi() { display.clearDisplay(); display.setCursor(0, 0); display.println("Connecting to WiFi..."); display.display(); WiFi.begin(ssid, password); while (WiFi.status() != WL_CONNECTED) { delay(500); display.print("."); display.display(); } display.clearDisplay(); display.setCursor(0,0); display.println("WiFi Connected!"); display.display(); delay(1000); }
+void connectToWiFi() {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("Connecting to WiFi...");
+    display.display();
+    
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        display.print(".");
+        display.display();
+    }
+    
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("WiFi Connected!");
+    display.print("IP: ");
+    display.println(WiFi.localIP());
+    display.display();
+    delay(2000);
+}
+
