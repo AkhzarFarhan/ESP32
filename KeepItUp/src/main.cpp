@@ -65,10 +65,22 @@ void setup()
     Serial.begin(115200);
     randomSeed(analogRead(0));
 
+    // Initialize I2C with explicit pins
+    Wire.begin(21, 22); // SDA=21, SCL=22
+    
     if(!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS))
     {
         Serial.println(F("SSD1306 allocation failed")); for(;;);
     }
+    
+    // Clear display and show initialization message
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("ESP32 Starting...");
+    display.display();
+    delay(1000);
 
     connectToWiFi();
     
@@ -360,6 +372,8 @@ void updateStateInFirebase(String& jsonPayload, bool is_reset, int last_action)
 // =================================================================
 void updateDisplayStats(int episode, int steps, float epsilon, const char* status_override)
 {
+    Serial.printf("Updating display: Episode=%d, Steps=%d, Epsilon=%.4f\n", episode, steps, epsilon);
+    
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
@@ -379,6 +393,8 @@ void updateDisplayStats(int episode, int steps, float epsilon, const char* statu
     display.drawRect(0, 50, SCREEN_WIDTH, 12, SSD1306_WHITE);
     display.fillRect(2, 52, progress_width, 8, SSD1306_WHITE);
     display.display();
+    
+    Serial.println("Display updated successfully");
 }
 
 String httpGETRequest(const char* url)
