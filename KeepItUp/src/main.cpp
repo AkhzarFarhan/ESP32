@@ -115,7 +115,7 @@ void setup()
             }
         }
     }
-    delay(2000);
+    delay(1000); // Reduced delay from 2000ms
 }
 
 // =================================================================
@@ -123,6 +123,27 @@ void setup()
 // =================================================================
 void loop()
 {
+    // Test if server is reachable first
+    String testUrl = "http://" + String(SERVER_IP) + ":5000/reset";
+    String testResponse = httpGETRequest(testUrl.c_str());
+    
+    if (testResponse == "") {
+        // Server not reachable - run in test mode
+        Serial.println("Server not reachable - running in display test mode");
+        for (int test_episode = 1; test_episode <= 100; ++test_episode) {
+            for (int test_steps = 0; test_steps <= 50; test_steps += 5) {
+                updateDisplayStats(test_episode, test_steps, epsilon, "Test Mode");
+                delay(100); // Update every 100ms for faster display
+                epsilon *= 0.999; // Simulate epsilon decay
+                if (epsilon < 0.05) epsilon = 0.05;
+            }
+        }
+        updateDisplayStats(100, 50, epsilon, "Test Complete");
+        delay(5000); // Reduced delay
+        return;
+    }
+    
+    // Normal training mode
     for (int episode = current_episode; episode <= NUM_EPISODES; ++episode)
     {
         // Sync local knowledge with the master copy before starting
@@ -150,10 +171,18 @@ void loop()
 // =================================================================
 void runEpisode(int episode)
 {
+    // Update display at start of episode
+    updateDisplayStats(episode, 0, epsilon, "Starting episode...");
+    
     // 1. Reset the environment
     String url = "http://" + String(SERVER_IP) + ":5000/reset";
     String payload = httpGETRequest(url.c_str());
-    if (payload == "") return;
+    if (payload == "") {
+        Serial.println("Failed to reset environment - server not responding");
+        updateDisplayStats(episode, 0, epsilon, "Server offline");
+        delay(1000); // Reduced delay from 5 seconds to 1 second
+        return;
+    }
     
     // Push the full initial state (with world layout) to Firebase for the visualizer
     updateStateInFirebase(payload, true);
@@ -176,7 +205,11 @@ void runEpisode(int episode)
         // 4. Perform the action in the environment
         url = "http://" + String(SERVER_IP) + ":5000/step?action=" + String(action);
         payload = httpGETRequest(url.c_str());
-        if (payload == "") break;
+        if (payload == "") {
+            Serial.println("Failed to perform step - server not responding");
+            updateDisplayStats(episode, steps, epsilon, "Connection lost");
+            break;
+        }
         
         // Push step state (drone/mission info) to Firebase for the visualizer
         updateStateInFirebase(payload, false, action);
@@ -203,6 +236,12 @@ void runEpisode(int episode)
         }
         
         steps++;
+        
+        // Update display every 5 steps to show progress (more frequent)
+        if (steps % 5 == 0) {
+            updateDisplayStats(episode, steps, epsilon);
+        }
+        
         if (steps > 800) done = true; // Timeout
     }
     updateDisplayStats(episode, steps, epsilon);
@@ -372,7 +411,7 @@ void updateStateInFirebase(String& jsonPayload, bool is_reset, int last_action)
 // =================================================================
 void updateDisplayStats(int episode, int steps, float epsilon, const char* status_override)
 {
-    Serial.printf("Updating display: Episode=%d, Steps=%d, Epsilon=%.4f\n", episode, steps, epsilon);
+    // Removed Serial.printf for faster execution
     
     display.clearDisplay();
     display.setTextSize(1);
@@ -394,14 +433,14 @@ void updateDisplayStats(int episode, int steps, float epsilon, const char* statu
     display.fillRect(2, 52, progress_width, 8, SSD1306_WHITE);
     display.display();
     
-    Serial.println("Display updated successfully");
+    // Removed Serial.println for faster execution
 }
 
 String httpGETRequest(const char* url)
 {
     HTTPClient http;
     http.begin(url);
-    http.setTimeout(2000);
+    http.setTimeout(1000); // Reduced timeout from 2000ms to 1000ms for faster failures
     int httpCode = http.GET();
     String payload = (httpCode > 0) ? http.getString() : "";
     if (httpCode <= 0)
