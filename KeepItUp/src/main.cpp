@@ -330,7 +330,7 @@ void updateStatsInFirebase(int episode, float epsilon_val)
     http.end();
 }
 
-void updateStateInFirebase(String& jsonPayload, bool is_reset, int last_action = -1)
+void updateStateInFirebase(String& jsonPayload, bool is_reset, int last_action)
 {
     // Parse the incoming JSON and add the last action
     JsonDocument doc;
