@@ -61,6 +61,12 @@
             min-width: 60px;
             display: inline-block;
         }
+
+        #droneStatus {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #03dac6;
+        }
     </style>
 </head>
 <body>
@@ -71,6 +77,11 @@
         <div id="statsPanel">
             <p><strong>Episode:</strong> <span id="episode">--</span></p>
             <p><strong>Epsilon (Explore %):</strong> <span id="epsilon">--</span></p>
+            <div id="droneStatus">
+                <p><strong>Position:</strong> <span id="dronePos">--</span></p>
+                <p><strong>Package Status:</strong> <span id="packageStatus">--</span></p>
+                <p><strong>Last Action:</strong> <span id="lastAction">--</span></p>
+            </div>
         </div>
     </div>
 
@@ -106,45 +117,92 @@
             ctx.fillStyle = '#4a4a4a';
             ctx.fillRect(0, WORLD_HEIGHT - 2, WORLD_WIDTH, 2);
 
-            if (simState.world) {
-                const { buildings, pickup_x, pickup_y, dropoff_x, dropoff_y } = simState.world;
+            // Check if we have any simulation data
+            if (simState && typeof simState === 'object') {
+                // For debugging - log the structure we received
+                console.log("Current simState:", simState);
 
-                // Draw Buildings
-                ctx.fillStyle = '#616161';
-                buildings?.forEach(b => {
-                    // Y-coordinate is flipped because canvas (0,0) is top-left
-                    ctx.fillRect(b.x, WORLD_HEIGHT - b.h, b.w, b.h);
-                });
+                // Draw drone if position data is available
+                if (simState.x !== undefined && simState.y !== undefined) {
+                    const droneY = WORLD_HEIGHT - simState.y; // Flip Y-coordinate
 
-                // Draw Pickup Target (Circle)
-                ctx.fillStyle = simState.drone?.has_package ? 'rgba(3, 218, 198, 0.2)' : '#03dac6';
-                ctx.beginPath();
-                ctx.arc(pickup_x, WORLD_HEIGHT - pickup_y, 10, 0, 2 * Math.PI);
-                ctx.fill();
+                    // Draw Drone Body
+                    ctx.fillStyle = simState.has_package ? '#bb86fc' : '#03dac6';
+                    ctx.fillRect(simState.x - 10, droneY - 5, 20, 10);
 
-                // Draw Dropoff Target (Square)
-                ctx.strokeStyle = '#bb86fc';
-                ctx.lineWidth = 3;
-                ctx.strokeRect(dropoff_x - 10, WORLD_HEIGHT - dropoff_y - 10, 22, 22);
-            }
-            
-            // Draw Drone
-            if (simState.drone) {
-                const { x, y, has_package } = simState.drone;
-                const droneY = WORLD_HEIGHT - y; // Flip Y-coordinate
-
-                // Draw Drone Body
-                ctx.fillStyle = has_package ? '#bb86fc' : '#03dac6';
-                ctx.fillRect(x - 10, droneY - 5, 20, 10);
-
-                // Draw thruster fire based on last action from ESP32
-                ctx.fillStyle = '#f39c12';
-                switch (simState.last_action) {
-                    case 1: ctx.fillRect(x-3, droneY + 5, 6, 8); break; // Thrust Up
-                    case 2: ctx.fillRect(x-3, droneY - 13, 6, 8); break; // Thrust Down
-                    case 3: ctx.fillRect(x+10, droneY - 3, 8, 6); break; // Thrust Left
-                    case 4: ctx.fillRect(x-18, droneY - 3, 8, 6); break; // Thrust Right
+                    // Draw thruster fire based on last action from ESP32
+                    if (simState.last_action !== undefined) {
+                        ctx.fillStyle = '#f39c12';
+                        switch (simState.last_action) {
+                            case 1: ctx.fillRect(simState.x-3, droneY + 5, 6, 8); break; // Thrust Up
+                            case 2: ctx.fillRect(simState.x-3, droneY - 13, 6, 8); break; // Thrust Down
+                            case 3: ctx.fillRect(simState.x+10, droneY - 3, 8, 6); break; // Thrust Left
+                            case 4: ctx.fillRect(simState.x-18, droneY - 3, 8, 6); break; // Thrust Right
+                        }
+                    }
                 }
+
+                // Draw targets if available
+                if (simState.target_x !== undefined && simState.target_y !== undefined) {
+                    // Draw current target (changes based on has_package state)
+                    if (simState.has_package) {
+                        // Draw Dropoff Target (Square) - drone has package, going to dropoff
+                        ctx.strokeStyle = '#bb86fc';
+                        ctx.lineWidth = 3;
+                        ctx.strokeRect(simState.target_x - 10, WORLD_HEIGHT - simState.target_y - 10, 20, 20);
+                        
+                        // Add label
+                        ctx.fillStyle = '#bb86fc';
+                        ctx.font = '12px sans-serif';
+                        ctx.fillText('DROPOFF', simState.target_x - 25, WORLD_HEIGHT - simState.target_y + 35);
+                    } else {
+                        // Draw Pickup Target (Circle) - drone needs to pickup package
+                        ctx.fillStyle = '#03dac6';
+                        ctx.beginPath();
+                        ctx.arc(simState.target_x, WORLD_HEIGHT - simState.target_y, 10, 0, 2 * Math.PI);
+                        ctx.fill();
+                        
+                        // Add label
+                        ctx.fillStyle = '#03dac6';
+                        ctx.font = '12px sans-serif';
+                        ctx.fillText('PICKUP', simState.target_x - 20, WORLD_HEIGHT - simState.target_y + 25);
+                    }
+                }
+
+                // Draw battery indicator
+                if (simState.battery !== undefined) {
+                    const batteryWidth = 100;
+                    const batteryHeight = 8;
+                    const batteryX = 10;
+                    const batteryY = 10;
+                    const batteryLevel = Math.max(0, Math.min(1, simState.battery / 600)); // Assuming max battery is 600
+                    
+                    // Battery outline
+                    ctx.strokeStyle = '#666';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(batteryX, batteryY, batteryWidth, batteryHeight);
+                    
+                    // Battery fill
+                    ctx.fillStyle = batteryLevel > 0.3 ? '#4caf50' : batteryLevel > 0.1 ? '#ff9800' : '#f44336';
+                    ctx.fillRect(batteryX + 1, batteryY + 1, (batteryWidth - 2) * batteryLevel, batteryHeight - 2);
+                    
+                    // Battery text
+                    ctx.fillStyle = '#e0e0e0';
+                    ctx.font = '10px sans-serif';
+                    ctx.fillText(`Battery: ${Math.round(simState.battery)}`, batteryX, batteryY + batteryHeight + 15);
+                }
+
+                // Draw velocity indicator
+                if (simState.vx !== undefined && simState.vy !== undefined) {
+                    ctx.fillStyle = '#e0e0e0';
+                    ctx.font = '10px sans-serif';
+                    ctx.fillText(`Velocity: (${simState.vx.toFixed(2)}, ${simState.vy.toFixed(2)})`, 10, 45);
+                }
+            } else {
+                // Show message when no data is available
+                ctx.fillStyle = '#ff5722';
+                ctx.font = '16px sans-serif';
+                ctx.fillText('Waiting for drone data...', 50, WORLD_HEIGHT / 2);
             }
 
             // Request the next frame
@@ -166,15 +224,31 @@
 
             simStateEventSource.addEventListener('put', (e) => {
                 const eventData = JSON.parse(e.data);
+                console.log("Firebase simulation_state event:", eventData);
+                
                 if (eventData.path === "/") {
                      // This is a "reset" event, data contains the full state
-                     simState = eventData.data;
+                     simState = eventData.data || {};
                 } else {
                     // This is a partial update, merge it into the existing state
                     // Note: Firebase REST 'put' on a sub-path gives the new data for that path.
                     // The ESP32 code is designed to overwrite the whole object, so this is robust.
-                    simState = eventData.data;
+                    simState = eventData.data || {};
                 }
+                console.log("Updated simState:", simState);
+                updateDroneStatus();
+            });
+            
+            simStateEventSource.addEventListener('patch', (e) => {
+                const eventData = JSON.parse(e.data);
+                console.log("Firebase simulation_state patch:", eventData);
+                
+                // Merge patch data into existing state
+                if (eventData.data && typeof eventData.data === 'object') {
+                    simState = { ...simState, ...eventData.data };
+                }
+                console.log("Patched simState:", simState);
+                updateDroneStatus();
             });
             
             simStateEventSource.onerror = (e) => {
@@ -187,9 +261,22 @@
 
             statsEventSource.addEventListener('put', (e) => {
                 const eventData = JSON.parse(e.data);
-                stats = eventData.data;
+                console.log("Firebase training_stats event:", eventData);
+                
+                stats = eventData.data || {};
                 document.getElementById('episode').textContent = stats.episode || '--';
                 document.getElementById('epsilon').textContent = stats.epsilon ? parseFloat(stats.epsilon).toFixed(4) : '--';
+            });
+            
+            statsEventSource.addEventListener('patch', (e) => {
+                const eventData = JSON.parse(e.data);
+                console.log("Firebase training_stats patch:", eventData);
+                
+                if (eventData.data && typeof eventData.data === 'object') {
+                    stats = { ...stats, ...eventData.data };
+                    document.getElementById('episode').textContent = stats.episode || '--';
+                    document.getElementById('epsilon').textContent = stats.epsilon ? parseFloat(stats.epsilon).toFixed(4) : '--';
+                }
             });
             
             statsEventSource.onerror = (e) => {
@@ -197,6 +284,29 @@
             };
             
             console.log("Firebase listeners attached via REST API.");
+        }
+
+        /**
+         * Updates the drone status display in the stats panel
+         */
+        function updateDroneStatus() {
+            if (simState && typeof simState === 'object') {
+                // Update position
+                if (simState.x !== undefined && simState.y !== undefined) {
+                    document.getElementById('dronePos').textContent = `(${Math.round(simState.x)}, ${Math.round(simState.y)})`;
+                }
+                
+                // Update package status
+                document.getElementById('packageStatus').textContent = simState.has_package ? 'Has Package' : 'No Package';
+                
+                // Update last action
+                const actionNames = ['None', 'Thrust Up', 'Thrust Down', 'Thrust Left', 'Thrust Right'];
+                if (simState.last_action !== undefined && simState.last_action >= 0 && simState.last_action < actionNames.length) {
+                    document.getElementById('lastAction').textContent = actionNames[simState.last_action];
+                } else {
+                    document.getElementById('lastAction').textContent = '--';
+                }
+            }
         }
 
         // --- Start Everything ---

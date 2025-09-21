@@ -55,7 +55,7 @@ void connectToWiFi();
 void runEpisode(int episode);
 bool getStatsFromFirebase();
 void updateStatsInFirebase(int episode, float epsilon);
-void updateStateInFirebase(String& jsonPayload, bool is_reset);
+void updateStateInFirebase(String& jsonPayload, bool is_reset, int last_action = -1);
 
 // =================================================================
 // SETUP: Runs once on boot
@@ -167,7 +167,7 @@ void runEpisode(int episode)
         if (payload == "") break;
         
         // Push step state (drone/mission info) to Firebase for the visualizer
-        updateStateInFirebase(payload, false);
+        updateStateInFirebase(payload, false, action);
 
         deserializeJson(state_doc, payload);
         float reward = state_doc["reward"];
@@ -330,15 +330,28 @@ void updateStatsInFirebase(int episode, float epsilon_val)
     http.end();
 }
 
-void updateStateInFirebase(String& jsonPayload, bool is_reset)
+void updateStateInFirebase(String& jsonPayload, bool is_reset, int last_action = -1)
 {
+    // Parse the incoming JSON and add the last action
+    JsonDocument doc;
+    deserializeJson(doc, jsonPayload);
+    
+    // Add the last action to the state data for the visualizer
+    if (last_action >= 0) {
+        doc["last_action"] = last_action;
+    }
+    
+    // Serialize back to string
+    String enhancedPayload;
+    serializeJson(doc, enhancedPayload);
+    
     HTTPClient http;
     String url = String(FIREBASE_HOST) + "/simulation_state.json?auth=" + String(FIREBASE_SECRET);
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
     // A full PUT is fine for both reset and step, as the structure is consistent.
     // The web app will know how to interpret it.
-    http.PUT(jsonPayload);
+    http.PUT(enhancedPayload);
     http.end();
 }
 
