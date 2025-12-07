@@ -527,8 +527,9 @@
                     y: {
                         grid: { color: 'rgba(255, 255, 255, 0.05)' },
                         ticks: { color: '#8892b0' },
-                        min: 0,
-                        suggestedMax: 2000
+                        // Auto-scale with padding to show differences between min/max/avg
+                        beginAtZero: false,
+                        grace: '20%'
                     }
                 }
             }
