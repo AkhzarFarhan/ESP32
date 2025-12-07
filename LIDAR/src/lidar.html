@@ -416,7 +416,7 @@
         <!-- Live Chart -->
         <div class="chart-container">
             <div class="chart-header">
-                <h2 class="chart-title">📉 Live Distance Graph (Avg, Min, Max)</h2>
+                <h2 class="chart-title">📉 10-Second Window (Avg, Absolute Min, Absolute Max)</h2>
                 <div class="chart-controls">
                     <button class="btn btn-secondary" onclick="clearChart()">Clear</button>
                     <button class="btn btn-primary" onclick="togglePause()">
@@ -465,7 +465,7 @@
                 labels: timeLabels,
                 datasets: [
                     {
-                        label: 'Average (mm)',
+                        label: '10s Average (mm)',
                         data: avgData,
                         borderColor: '#00d4ff',
                         backgroundColor: 'rgba(0, 212, 255, 0.1)',
@@ -475,7 +475,7 @@
                         pointRadius: 3
                     },
                     {
-                        label: 'Minimum (mm)',
+                        label: '10s Absolute Min (mm)',
                         data: minData,
                         borderColor: '#2ed573',
                         backgroundColor: 'rgba(46, 213, 115, 0.1)',
@@ -486,7 +486,7 @@
                         borderDash: [5, 5]
                     },
                     {
-                        label: 'Maximum (mm)',
+                        label: '10s Absolute Max (mm)',
                         data: maxData,
                         borderColor: '#ff6b6b',
                         backgroundColor: 'rgba(255, 107, 107, 0.1)',
@@ -582,15 +582,15 @@
             // Update readings count
             document.getElementById('readingsCount').textContent = readingsCount;
             
-            // Update chart if not paused
-            if (!isPaused && data.one_second) {
+            // Update chart if not paused - use 10-SECOND ABSOLUTE min/max for graph
+            if (!isPaused && data.ten_second) {
                 const now = new Date();
                 const timeStr = now.toLocaleTimeString();
                 
                 timeLabels.push(timeStr);
-                avgData.push(data.one_second.avg_mm);
-                minData.push(data.one_second.min_mm);
-                maxData.push(data.one_second.max_mm);
+                avgData.push(data.ten_second.avg_mm);  // 10-sec average
+                minData.push(data.ten_second.min_mm);  // 10-sec ABSOLUTE minimum
+                maxData.push(data.ten_second.max_mm);  // 10-sec ABSOLUTE maximum
                 
                 // Keep only last MAX_DATA_POINTS
                 if (timeLabels.length > MAX_DATA_POINTS) {

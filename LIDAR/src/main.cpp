@@ -49,6 +49,10 @@ uint16_t secondMinBuffer[MAX_SECOND_SAMPLES];    // 1-second minimums
 uint16_t secondMaxBuffer[MAX_SECOND_SAMPLES];    // 1-second maximums
 int secondBufferIndex = 0;
 
+// Running 10-second ABSOLUTE min/max (updated every second, not averaged)
+uint16_t running10sMin = 65535;
+uint16_t running10sMax = 0;
+
 // Current reading stats
 uint16_t currentDistance = 0;
 uint16_t lastValidDistance = 0;
@@ -72,7 +76,7 @@ unsigned long lastFirebaseSuccess = 0;
 void initOLED();
 void initVL53L0X();
 void connectToWiFi();
-void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist, uint16_t max_dist, bool valid, bool wifiConnected, int bufferCount);
+void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist, uint16_t max_dist, uint16_t min10s, uint16_t max10s, bool valid, bool wifiConnected, int bufferCount);
 void displayError(const char* message);
 void uploadToFirebaseAsync();
 
@@ -143,12 +147,20 @@ void loop() {
                 secondBufferIndex++;
             }
             
+            // Update RUNNING 10-second ABSOLUTE min/max (not averaged!)
+            if (secondMin < running10sMin) running10sMin = secondMin;
+            if (secondMax > running10sMax) running10sMax = secondMax;
+            
             Serial.print("1s Avg: ");
             Serial.print(lastSecondAvg);
             Serial.print(" mm | Min: ");
             Serial.print(secondMin);
             Serial.print(" | Max: ");
             Serial.print(secondMax);
+            Serial.print(" | 10s Min: ");
+            Serial.print(running10sMin);
+            Serial.print(" | 10s Max: ");
+            Serial.print(running10sMax);
             Serial.print(" (");
             Serial.print(secondCount);
             Serial.println(" readings)");
@@ -168,7 +180,10 @@ void loop() {
         // Pass current 1-second stats (use stored values if second just reset)
         uint16_t dispMin = (secondMin == 65535) ? lastSecondAvg : secondMin;
         uint16_t dispMax = (secondMax == 0) ? lastSecondAvg : secondMax;
-        displayDistance(currentDistance, lastSecondAvg, dispMin, dispMax, lastReadingValid, wifiConnected, secondBufferIndex);
+        // Pass running 10-second ABSOLUTE min/max
+        uint16_t disp10sMin = (running10sMin == 65535) ? dispMin : running10sMin;
+        uint16_t disp10sMax = (running10sMax == 0) ? dispMax : running10sMax;
+        displayDistance(currentDistance, lastSecondAvg, dispMin, dispMax, disp10sMin, disp10sMax, lastReadingValid, wifiConnected, secondBufferIndex);
         lastDisplayTime = currentTime;
     }
     
@@ -302,7 +317,7 @@ void initVL53L0X() {
 // =================================================================
 // --- DISPLAY FUNCTIONS ---
 // =================================================================
-void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist, uint16_t max_dist, bool valid, bool wifiConnected, int bufferCount) {
+void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist, uint16_t max_dist, uint16_t min10s, uint16_t max10s, bool valid, bool wifiConnected, int bufferCount) {
     display.clearDisplay();
     
     // Title with WiFi status
@@ -326,29 +341,24 @@ void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist,
         // Show 1-second stats: Avg | Min | Max
         display.setTextSize(1);
         display.setCursor(0, 32);
-        display.print("A:");
+        display.print("1s A:");
         display.print(avg_dist);
         display.print(" m:");
         display.print(min_dist);
         display.print(" M:");
         display.println(max_dist);
         
-        // Show in cm
+        // Show 10-second ABSOLUTE min/max
         display.setCursor(0, 42);
-        display.print("= ");
-        display.print(avg_dist / 10.0, 1);
-        display.println(" cm (1s avg)");
+        display.print("10s m:");
+        display.print(min10s);
+        display.print(" M:");
+        display.println(max10s);
         
         // Show status bar (visual representation)
         int bar_width = map(constrain(distance_mm, 30, 2000), 30, 2000, 0, SCREEN_WIDTH - 4);
         display.drawRect(0, 52, SCREEN_WIDTH, 6, SSD1306_WHITE);
         display.fillRect(2, 54, bar_width, 2, SSD1306_WHITE);
-        
-        // Upload countdown
-        display.setCursor(0, 60);
-        display.print("Firebase upload: ");
-        display.print(10 - bufferCount);
-        display.print("s");
     } else {
         // Out of range message
         display.setTextSize(2);
@@ -381,18 +391,17 @@ void uploadToFirebaseAsync() {
     
     unsigned long startTime = millis();
     
-    // Calculate statistics from 1-SECOND data
+    // Calculate AVERAGE from 1-SECOND data
     uint32_t sum = 0;
-    uint16_t overallMin = 65535;
-    uint16_t overallMax = 0;
-    
     for (int i = 0; i < secondBufferIndex; i++) {
         sum += secondAvgBuffer[i];
-        if (secondMinBuffer[i] < overallMin) overallMin = secondMinBuffer[i];
-        if (secondMaxBuffer[i] > overallMax) overallMax = secondMaxBuffer[i];
     }
-    
     uint16_t avgDist = sum / secondBufferIndex;
+    
+    // Use running ABSOLUTE min/max (NOT averaged!)
+    // These track the true minimum and maximum across entire 10-second window
+    uint16_t overallMin = running10sMin;
+    uint16_t overallMax = running10sMax;
     
     HTTPClient http;
     http.setTimeout(5000);
@@ -467,6 +476,10 @@ void uploadToFirebaseAsync() {
     
     // Clear buffer after successful upload
     secondBufferIndex = 0;
+    
+    // Reset running 10-second min/max for next window
+    running10sMin = 65535;
+    running10sMax = 0;
     
     unsigned long uploadTime = millis() - startTime;
     Serial.print("Firebase bulk upload completed in ");
