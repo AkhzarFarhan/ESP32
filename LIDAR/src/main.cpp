@@ -72,10 +72,9 @@ unsigned long lastFirebaseSuccess = 0;
 void initOLED();
 void initVL53L0X();
 void connectToWiFi();
-void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bool wifiConnected, int bufferCount);
+void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist, uint16_t max_dist, bool valid, bool wifiConnected, int bufferCount);
 void displayError(const char* message);
 void uploadToFirebaseAsync();
-void addToBuffer(uint16_t distance);
 
 // =================================================================
 // SETUP: Runs once on boot
@@ -166,7 +165,10 @@ void loop() {
     // --- 3. UPDATE DISPLAY (every 100ms for smooth updates) ---
     if (currentTime - lastDisplayTime >= DISPLAY_INTERVAL) {
         bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-        displayDistance(currentDistance, lastSecondAvg, lastReadingValid, wifiConnected, secondBufferIndex);
+        // Pass current 1-second stats (use stored values if second just reset)
+        uint16_t dispMin = (secondMin == 65535) ? lastSecondAvg : secondMin;
+        uint16_t dispMax = (secondMax == 0) ? lastSecondAvg : secondMax;
+        displayDistance(currentDistance, lastSecondAvg, dispMin, dispMax, lastReadingValid, wifiConnected, secondBufferIndex);
         lastDisplayTime = currentTime;
     }
     
@@ -300,7 +302,7 @@ void initVL53L0X() {
 // =================================================================
 // --- DISPLAY FUNCTIONS ---
 // =================================================================
-void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bool wifiConnected, int bufferCount) {
+void displayDistance(uint16_t distance_mm, uint16_t avg_dist, uint16_t min_dist, uint16_t max_dist, bool valid, bool wifiConnected, int bufferCount) {
     display.clearDisplay();
     
     // Title with WiFi status
@@ -308,39 +310,45 @@ void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bo
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
     display.print("LIDAR ");
-    display.print(wifiConnected ? "[WiFi]" : "[OFF]");
-    display.print(" ");
-    display.print(bufferCount);
+    display.print(wifiConnected ? "[OK]" : "[--]");
+    display.print(" T-");
+    display.print(10 - bufferCount);
     display.println("s");
     display.drawFastHLine(0, 10, SCREEN_WIDTH, SSD1306_WHITE);
     
     if (valid) {
         // Display current distance in large font
         display.setTextSize(2);
-        display.setCursor(0, 14);
+        display.setCursor(0, 13);
         display.print(distance_mm);
         display.println(" mm");
         
-        // Show average distance
+        // Show 1-second stats: Avg | Min | Max
         display.setTextSize(1);
-        display.setCursor(0, 35);
-        display.print("1s Avg: ");
-        display.print(avg_distance);
-        display.print(" mm (");
-        display.print(avg_distance / 10.0, 1);
-        display.println(" cm)");
+        display.setCursor(0, 32);
+        display.print("A:");
+        display.print(avg_dist);
+        display.print(" m:");
+        display.print(min_dist);
+        display.print(" M:");
+        display.println(max_dist);
+        
+        // Show in cm
+        display.setCursor(0, 42);
+        display.print("= ");
+        display.print(avg_dist / 10.0, 1);
+        display.println(" cm (1s avg)");
         
         // Show status bar (visual representation)
         int bar_width = map(constrain(distance_mm, 30, 2000), 30, 2000, 0, SCREEN_WIDTH - 4);
-        display.drawRect(0, 48, SCREEN_WIDTH, 8, SSD1306_WHITE);
-        display.fillRect(2, 50, bar_width, 4, SSD1306_WHITE);
+        display.drawRect(0, 52, SCREEN_WIDTH, 6, SSD1306_WHITE);
+        display.fillRect(2, 54, bar_width, 2, SSD1306_WHITE);
         
-        // Upload progress (buffer fills every 10 seconds)
-        display.setCursor(0, 58);
-        int progress = (bufferCount * 100) / MAX_SECOND_SAMPLES;
-        display.print("Upload in: ");
+        // Upload countdown
+        display.setCursor(0, 60);
+        display.print("Firebase upload: ");
         display.print(10 - bufferCount);
-        display.println("s");
+        display.print("s");
     } else {
         // Out of range message
         display.setTextSize(2);
@@ -373,32 +381,42 @@ void uploadToFirebaseAsync() {
     
     unsigned long startTime = millis();
     
-    // Calculate statistics from 1-SECOND AVERAGES
-    // Each second has EQUAL weight in the final average
+    // Calculate statistics from 1-SECOND data
     uint32_t sum = 0;
     uint16_t overallMin = 65535;
     uint16_t overallMax = 0;
     
     for (int i = 0; i < secondBufferIndex; i++) {
-        sum += secondAvgBuffer[i];           // Sum of 1-second averages
+        sum += secondAvgBuffer[i];
         if (secondMinBuffer[i] < overallMin) overallMin = secondMinBuffer[i];
         if (secondMaxBuffer[i] > overallMax) overallMax = secondMaxBuffer[i];
     }
     
-    // Average of 1-second averages (each second counts equally!)
     uint16_t avgDist = sum / secondBufferIndex;
     
     HTTPClient http;
-    http.setTimeout(5000); // 5 second timeout
+    http.setTimeout(5000);
     
-    // --- 1. Update "latest" with current stats ---
+    // --- 1. Update "latest" with comprehensive stats ---
     JsonDocument latestDoc;
-    latestDoc["distance_mm"] = secondAvgBuffer[secondBufferIndex - 1]; // Most recent 1-sec avg
+    
+    // Current reading (most recent 1-sec values)
+    latestDoc["distance_mm"] = secondAvgBuffer[secondBufferIndex - 1];
     latestDoc["distance_cm"] = secondAvgBuffer[secondBufferIndex - 1] / 10.0;
-    latestDoc["avg_mm"] = avgDist;           // Average of all 1-second averages
-    latestDoc["min_mm"] = overallMin;        // Overall minimum
-    latestDoc["max_mm"] = overallMax;        // Overall maximum
-    latestDoc["seconds"] = secondBufferIndex; // Number of seconds
+    
+    // 1-second stats (most recent second)
+    JsonObject oneSecond = latestDoc["one_second"].to<JsonObject>();
+    oneSecond["avg_mm"] = secondAvgBuffer[secondBufferIndex - 1];
+    oneSecond["min_mm"] = secondMinBuffer[secondBufferIndex - 1];
+    oneSecond["max_mm"] = secondMaxBuffer[secondBufferIndex - 1];
+    
+    // 10-second stats (all seconds combined)
+    JsonObject tenSecond = latestDoc["ten_second"].to<JsonObject>();
+    tenSecond["avg_mm"] = avgDist;
+    tenSecond["min_mm"] = overallMin;
+    tenSecond["max_mm"] = overallMax;
+    tenSecond["seconds"] = secondBufferIndex;
+    
     latestDoc["timestamp"] = millis();
     
     String latestPayload;
@@ -417,18 +435,25 @@ void uploadToFirebaseAsync() {
         Serial.println(httpCode);
     }
     
-    // --- 2. Add batch to history with ALL 1-second averages ---
+    // --- 2. Add batch to history with ALL 1-second data ---
     JsonDocument batchDoc;
     batchDoc["timestamp"] = millis();
     batchDoc["seconds"] = secondBufferIndex;
+    
+    // 10-second summary
     batchDoc["avg_mm"] = avgDist;
     batchDoc["min_mm"] = overallMin;
     batchDoc["max_mm"] = overallMax;
     
-    // Include ALL 1-second averages so short events are visible
-    JsonArray avgArray = batchDoc["second_averages"].to<JsonArray>();
+    // All 1-second averages
+    JsonArray avgArray = batchDoc["second_avgs"].to<JsonArray>();
+    JsonArray minArray = batchDoc["second_mins"].to<JsonArray>();
+    JsonArray maxArray = batchDoc["second_maxs"].to<JsonArray>();
+    
     for (int i = 0; i < secondBufferIndex; i++) {
         avgArray.add(secondAvgBuffer[i]);
+        minArray.add(secondMinBuffer[i]);
+        maxArray.add(secondMaxBuffer[i]);
     }
     
     String batchPayload;
