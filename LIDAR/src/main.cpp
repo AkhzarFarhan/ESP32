@@ -31,13 +31,36 @@ const char* FIREBASE_SECRET = "YOUR_DATABASE_SECRET"; // Your Firebase DB Secret
 VL53L0X lox;
 
 // =================================================================
-// --- Averaging Variables ---
+// --- Timing & Buffering Configuration ---
 // =================================================================
-unsigned long lastLogTime = 0;
-const unsigned long LOG_INTERVAL = 1000; // Log to Firebase every 1 second
-uint32_t distanceSum = 0;
-uint16_t readingCount = 0;
-uint16_t lastAvgDistance = 0;
+// Display update interval (real-time feel)
+const unsigned long DISPLAY_INTERVAL = 100;      // Update display every 100ms
+unsigned long lastDisplayTime = 0;
+
+// Firebase bulk upload interval
+const unsigned long FIREBASE_INTERVAL = 10000;   // Upload to Firebase every 10 seconds
+unsigned long lastFirebaseTime = 0;
+
+// Buffer for storing readings (10 seconds worth of data)
+const int MAX_BUFFER_SIZE = 100;                 // Store up to 100 readings
+uint16_t distanceBuffer[MAX_BUFFER_SIZE];
+unsigned long timestampBuffer[MAX_BUFFER_SIZE];
+int bufferIndex = 0;
+
+// Current reading stats
+uint16_t currentDistance = 0;
+uint16_t lastValidDistance = 0;
+bool lastReadingValid = false;
+
+// 1-second averaging for display
+uint32_t secondSum = 0;
+uint16_t secondCount = 0;
+uint16_t lastSecondAvg = 0;
+unsigned long lastSecondTime = 0;
+
+// Firebase upload status
+bool firebaseUploading = false;
+unsigned long lastFirebaseSuccess = 0;
 
 // =================================================================
 // --- Forward Declarations ---
@@ -45,9 +68,10 @@ uint16_t lastAvgDistance = 0;
 void initOLED();
 void initVL53L0X();
 void connectToWiFi();
-void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bool wifiConnected);
+void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bool wifiConnected, int bufferCount);
 void displayError(const char* message);
-void logToFirebase(uint16_t avg_distance);
+void uploadToFirebaseAsync();
+void addToBuffer(uint16_t distance);
 
 // =================================================================
 // SETUP: Runs once on boot
@@ -58,6 +82,7 @@ void setup() {
     
     Serial.println("ESP32 VL53L0X LIDAR Distance Sensor");
     Serial.println("====================================");
+    Serial.println("Optimized with buffered Firebase uploads");
     
     // Initialize I2C with explicit pins (SDA=21, SCL=22 for ESP32)
     Wire.begin(21, 22);
@@ -71,63 +96,82 @@ void setup() {
     // Initialize VL53L0X Sensor
     initVL53L0X();
     
-    lastLogTime = millis();
+    unsigned long now = millis();
+    lastDisplayTime = now;
+    lastFirebaseTime = now;
+    lastSecondTime = now;
 }
 
 // =================================================================
-// MAIN LOOP: Continuously read and display distance
+// MAIN LOOP: Fast sensor reading with buffered Firebase uploads
 // =================================================================
 void loop() {
-    uint16_t distance = lox.readRangeContinuousMillimeters();
-    bool validReading = false;
-    
-    if (!lox.timeoutOccurred()) {
-        // Valid reading if distance < 8190 (which indicates out of range)
-        if (distance < 8190) {
-            validReading = true;
-            
-            // Accumulate for averaging
-            distanceSum += distance;
-            readingCount++;
-            
-            // Print to Serial
-            Serial.print("Distance: ");
-            Serial.print(distance);
-            Serial.println(" mm");
-        } else {
-            Serial.println("Out of range!");
-        }
-    } else {
-        Serial.println("Sensor timeout!");
-    }
-    
-    // Check if 1 second has passed - time to log to Firebase
     unsigned long currentTime = millis();
-    if (currentTime - lastLogTime >= LOG_INTERVAL) {
-        if (readingCount > 0) {
-            lastAvgDistance = distanceSum / readingCount;
-            
-            Serial.print("Average Distance (1s): ");
-            Serial.print(lastAvgDistance);
-            Serial.print(" mm (");
-            Serial.print(readingCount);
-            Serial.println(" readings)");
-            
-            // Log to Firebase
-            logToFirebase(lastAvgDistance);
-        }
+    
+    // --- 1. READ SENSOR (as fast as possible) ---
+    uint16_t distance = lox.readRangeContinuousMillimeters();
+    
+    if (!lox.timeoutOccurred() && distance < 8190) {
+        lastReadingValid = true;
+        currentDistance = distance;
+        lastValidDistance = distance;
         
-        // Reset for next interval
-        distanceSum = 0;
-        readingCount = 0;
-        lastLogTime = currentTime;
+        // Accumulate for 1-second average (for display)
+        secondSum += distance;
+        secondCount++;
+        
+        // Add to buffer for Firebase
+        addToBuffer(distance);
+    } else {
+        lastReadingValid = false;
     }
     
-    // Display current reading and last average
-    bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-    displayDistance(distance, lastAvgDistance, validReading, wifiConnected);
+    // --- 2. UPDATE 1-SECOND AVERAGE (for display) ---
+    if (currentTime - lastSecondTime >= 1000) {
+        if (secondCount > 0) {
+            lastSecondAvg = secondSum / secondCount;
+            Serial.print("1s Avg: ");
+            Serial.print(lastSecondAvg);
+            Serial.print(" mm (");
+            Serial.print(secondCount);
+            Serial.println(" readings)");
+        }
+        secondSum = 0;
+        secondCount = 0;
+        lastSecondTime = currentTime;
+    }
     
-    delay(50); // Small delay between readings
+    // --- 3. UPDATE DISPLAY (every 100ms for smooth updates) ---
+    if (currentTime - lastDisplayTime >= DISPLAY_INTERVAL) {
+        bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+        displayDistance(currentDistance, lastSecondAvg, lastReadingValid, wifiConnected, bufferIndex);
+        lastDisplayTime = currentTime;
+    }
+    
+    // --- 4. UPLOAD TO FIREBASE (every 10 seconds, bulk upload) ---
+    if (currentTime - lastFirebaseTime >= FIREBASE_INTERVAL) {
+        if (bufferIndex > 0 && WiFi.status() == WL_CONNECTED) {
+            Serial.print("Uploading ");
+            Serial.print(bufferIndex);
+            Serial.println(" readings to Firebase...");
+            uploadToFirebaseAsync();
+        }
+        lastFirebaseTime = currentTime;
+    }
+    
+    // Minimal delay - sensor timing budget handles the rest
+    delay(10);
+}
+
+// =================================================================
+// --- BUFFER MANAGEMENT ---
+// =================================================================
+void addToBuffer(uint16_t distance) {
+    if (bufferIndex < MAX_BUFFER_SIZE) {
+        distanceBuffer[bufferIndex] = distance;
+        timestampBuffer[bufferIndex] = millis();
+        bufferIndex++;
+    }
 }
 
 // =================================================================
@@ -214,19 +258,20 @@ void initVL53L0X() {
     }
     
     // =================================================================
-    // LONG RANGE MODE CONFIGURATION (up to 2 meters)
+    // HIGH SPEED + LONG RANGE MODE (balanced for responsiveness)
     // =================================================================
-    // Lower the return signal rate limit (default is 0.25 MCPS)
+    // Lower the return signal rate limit for long range detection
     lox.setSignalRateLimit(0.1);
     
-    // Increase laser pulse periods (default is 14 and 10 PCLKs)
+    // Increase laser pulse periods for better long-range detection
     lox.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
     lox.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
     
-    // Increase timing budget for better accuracy at long range (default ~33ms)
-    lox.setMeasurementTimingBudget(200000); // 200ms for better long-range accuracy
+    // FASTER timing budget: 50ms instead of 200ms
+    // Good balance between speed (~20 readings/sec) and accuracy
+    lox.setMeasurementTimingBudget(50000); // 50ms for faster readings
     
-    Serial.println("Long range mode enabled (up to 2m)");
+    Serial.println("High-speed long range mode enabled");
     
     // Start continuous ranging measurements
     lox.startContinuous();
@@ -236,7 +281,7 @@ void initVL53L0X() {
     display.clearDisplay();
     display.setCursor(0, 0);
     display.println("VL53L0X Ready!");
-    display.println("Long Range Mode");
+    display.println("Fast + Long Range");
     display.display();
     delay(1000);
 }
@@ -244,15 +289,17 @@ void initVL53L0X() {
 // =================================================================
 // --- DISPLAY FUNCTIONS ---
 // =================================================================
-void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bool wifiConnected) {
+void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bool wifiConnected, int bufferCount) {
     display.clearDisplay();
     
     // Title with WiFi status
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
-    display.print("LIDAR Sensor ");
-    display.println(wifiConnected ? "[WiFi]" : "[OFF]");
+    display.print("LIDAR ");
+    display.print(wifiConnected ? "[WiFi]" : "[OFF]");
+    display.print(" Buf:");
+    display.println(bufferCount);
     display.drawFastHLine(0, 10, SCREEN_WIDTH, SSD1306_WHITE);
     
     if (valid) {
@@ -272,14 +319,16 @@ void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bo
         display.println(" cm)");
         
         // Show status bar (visual representation)
-        // VL53L0X range is typically 30-2000mm
         int bar_width = map(constrain(distance_mm, 30, 2000), 30, 2000, 0, SCREEN_WIDTH - 4);
         display.drawRect(0, 48, SCREEN_WIDTH, 8, SSD1306_WHITE);
         display.fillRect(2, 50, bar_width, 4, SSD1306_WHITE);
         
-        // Firebase status
+        // Upload progress (buffer fills every 10 seconds)
         display.setCursor(0, 58);
-        display.print("Firebase: Logging...");
+        int progress = (bufferCount * 100) / MAX_BUFFER_SIZE;
+        display.print("Next upload: ");
+        display.print(progress);
+        display.println("%");
     } else {
         // Out of range message
         display.setTextSize(2);
@@ -303,46 +352,87 @@ void displayError(const char* message) {
 }
 
 // =================================================================
-// --- FIREBASE LOGGING ---
+// --- FIREBASE BULK UPLOAD ---
 // =================================================================
-void logToFirebase(uint16_t avg_distance) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi not connected - skipping Firebase log");
+void uploadToFirebaseAsync() {
+    if (WiFi.status() != WL_CONNECTED || bufferIndex == 0) {
         return;
     }
     
+    unsigned long startTime = millis();
+    
+    // Calculate statistics from buffer
+    uint32_t sum = 0;
+    uint16_t minDist = 65535;
+    uint16_t maxDist = 0;
+    
+    for (int i = 0; i < bufferIndex; i++) {
+        sum += distanceBuffer[i];
+        if (distanceBuffer[i] < minDist) minDist = distanceBuffer[i];
+        if (distanceBuffer[i] > maxDist) maxDist = distanceBuffer[i];
+    }
+    
+    uint16_t avgDist = sum / bufferIndex;
+    
     HTTPClient http;
+    http.setTimeout(5000); // 5 second timeout
     
-    // Create JSON payload
-    JsonDocument doc;
-    doc["distance_mm"] = avg_distance;
-    doc["distance_cm"] = avg_distance / 10.0;
-    doc["timestamp"] = millis();
+    // --- 1. Update "latest" with current stats ---
+    JsonDocument latestDoc;
+    latestDoc["distance_mm"] = distanceBuffer[bufferIndex - 1]; // Most recent
+    latestDoc["distance_cm"] = distanceBuffer[bufferIndex - 1] / 10.0;
+    latestDoc["avg_mm"] = avgDist;
+    latestDoc["min_mm"] = minDist;
+    latestDoc["max_mm"] = maxDist;
+    latestDoc["readings"] = bufferIndex;
+    latestDoc["timestamp"] = millis();
     
-    String payload;
-    serializeJson(doc, payload);
+    String latestPayload;
+    serializeJson(latestDoc, latestPayload);
     
-    // Send to Firebase
     String url = String(FIREBASE_HOST) + "/latest.json?auth=" + String(FIREBASE_SECRET);
     http.begin(url);
     http.addHeader("Content-Type", "application/json");
-    
-    int httpCode = http.PUT(payload);
-    
-    if (httpCode > 0) {
-        Serial.print("Firebase update: ");
-        Serial.println(httpCode == 200 ? "Success" : String(httpCode));
-    } else {
-        Serial.print("Firebase error: ");
-        Serial.println(http.errorToString(httpCode));
-    }
-    
+    int httpCode = http.PUT(latestPayload);
     http.end();
     
-    // Also log to history with timestamp
+    if (httpCode == 200) {
+        Serial.println("Latest data uploaded successfully");
+    } else {
+        Serial.print("Latest upload failed: ");
+        Serial.println(httpCode);
+    }
+    
+    // --- 2. Add batch to history ---
+    JsonDocument batchDoc;
+    batchDoc["timestamp"] = millis();
+    batchDoc["count"] = bufferIndex;
+    batchDoc["avg_mm"] = avgDist;
+    batchDoc["min_mm"] = minDist;
+    batchDoc["max_mm"] = maxDist;
+    
+    // Add sample of readings (first, middle, last to save space)
+    JsonArray samples = batchDoc["samples"].to<JsonArray>();
+    samples.add(distanceBuffer[0]);
+    samples.add(distanceBuffer[bufferIndex / 2]);
+    samples.add(distanceBuffer[bufferIndex - 1]);
+    
+    String batchPayload;
+    serializeJson(batchDoc, batchPayload);
+    
     String historyUrl = String(FIREBASE_HOST) + "/history.json?auth=" + String(FIREBASE_SECRET);
     http.begin(historyUrl);
     http.addHeader("Content-Type", "application/json");
-    http.POST(payload); // POST adds a new entry with unique key
+    http.POST(batchPayload);
     http.end();
+    
+    // Clear buffer after successful upload
+    bufferIndex = 0;
+    
+    unsigned long uploadTime = millis() - startTime;
+    Serial.print("Firebase bulk upload completed in ");
+    Serial.print(uploadTime);
+    Serial.println("ms");
+    
+    lastFirebaseSuccess = millis();
 }
