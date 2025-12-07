@@ -41,21 +41,25 @@ unsigned long lastDisplayTime = 0;
 const unsigned long FIREBASE_INTERVAL = 10000;   // Upload to Firebase every 10 seconds
 unsigned long lastFirebaseTime = 0;
 
-// Buffer for storing readings (10 seconds worth of data)
-const int MAX_BUFFER_SIZE = 100;                 // Store up to 100 readings
-uint16_t distanceBuffer[MAX_BUFFER_SIZE];
-unsigned long timestampBuffer[MAX_BUFFER_SIZE];
-int bufferIndex = 0;
+// Buffer for storing 1-SECOND AVERAGES (not raw readings)
+// This ensures each second has equal weight in the final average
+const int MAX_SECOND_SAMPLES = 10;               // Store 10 seconds of 1-second averages
+uint16_t secondAvgBuffer[MAX_SECOND_SAMPLES];    // 1-second averages
+uint16_t secondMinBuffer[MAX_SECOND_SAMPLES];    // 1-second minimums
+uint16_t secondMaxBuffer[MAX_SECOND_SAMPLES];    // 1-second maximums
+int secondBufferIndex = 0;
 
 // Current reading stats
 uint16_t currentDistance = 0;
 uint16_t lastValidDistance = 0;
 bool lastReadingValid = false;
 
-// 1-second averaging for display
+// 1-second accumulation for averaging
 uint32_t secondSum = 0;
 uint16_t secondCount = 0;
 uint16_t lastSecondAvg = 0;
+uint16_t secondMin = 65535;
+uint16_t secondMax = 0;
 unsigned long lastSecondTime = 0;
 
 // Firebase upload status
@@ -103,7 +107,7 @@ void setup() {
 }
 
 // =================================================================
-// MAIN LOOP: Fast sensor reading with buffered Firebase uploads
+// MAIN LOOP: Fast sensor reading with 1-second averaging
 // =================================================================
 void loop() {
     unsigned long currentTime = millis();
@@ -116,44 +120,62 @@ void loop() {
         currentDistance = distance;
         lastValidDistance = distance;
         
-        // Accumulate for 1-second average (for display)
+        // Accumulate for 1-second stats
         secondSum += distance;
         secondCount++;
         
-        // Add to buffer for Firebase
-        addToBuffer(distance);
+        // Track min/max within this second
+        if (distance < secondMin) secondMin = distance;
+        if (distance > secondMax) secondMax = distance;
     } else {
         lastReadingValid = false;
     }
     
-    // --- 2. UPDATE 1-SECOND AVERAGE (for display) ---
+    // --- 2. STORE 1-SECOND AVERAGE TO BUFFER ---
     if (currentTime - lastSecondTime >= 1000) {
         if (secondCount > 0) {
             lastSecondAvg = secondSum / secondCount;
+            
+            // Store this second's stats in buffer (for Firebase)
+            if (secondBufferIndex < MAX_SECOND_SAMPLES) {
+                secondAvgBuffer[secondBufferIndex] = lastSecondAvg;
+                secondMinBuffer[secondBufferIndex] = secondMin;
+                secondMaxBuffer[secondBufferIndex] = secondMax;
+                secondBufferIndex++;
+            }
+            
             Serial.print("1s Avg: ");
             Serial.print(lastSecondAvg);
-            Serial.print(" mm (");
+            Serial.print(" mm | Min: ");
+            Serial.print(secondMin);
+            Serial.print(" | Max: ");
+            Serial.print(secondMax);
+            Serial.print(" (");
             Serial.print(secondCount);
             Serial.println(" readings)");
         }
+        
+        // Reset for next second
         secondSum = 0;
         secondCount = 0;
+        secondMin = 65535;
+        secondMax = 0;
         lastSecondTime = currentTime;
     }
     
     // --- 3. UPDATE DISPLAY (every 100ms for smooth updates) ---
     if (currentTime - lastDisplayTime >= DISPLAY_INTERVAL) {
         bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-        displayDistance(currentDistance, lastSecondAvg, lastReadingValid, wifiConnected, bufferIndex);
+        displayDistance(currentDistance, lastSecondAvg, lastReadingValid, wifiConnected, secondBufferIndex);
         lastDisplayTime = currentTime;
     }
     
     // --- 4. UPLOAD TO FIREBASE (every 10 seconds, bulk upload) ---
     if (currentTime - lastFirebaseTime >= FIREBASE_INTERVAL) {
-        if (bufferIndex > 0 && WiFi.status() == WL_CONNECTED) {
+        if (secondBufferIndex > 0 && WiFi.status() == WL_CONNECTED) {
             Serial.print("Uploading ");
-            Serial.print(bufferIndex);
-            Serial.println(" readings to Firebase...");
+            Serial.print(secondBufferIndex);
+            Serial.println(" second-averages to Firebase...");
             uploadToFirebaseAsync();
         }
         lastFirebaseTime = currentTime;
@@ -161,17 +183,6 @@ void loop() {
     
     // Minimal delay - sensor timing budget handles the rest
     delay(10);
-}
-
-// =================================================================
-// --- BUFFER MANAGEMENT ---
-// =================================================================
-void addToBuffer(uint16_t distance) {
-    if (bufferIndex < MAX_BUFFER_SIZE) {
-        distanceBuffer[bufferIndex] = distance;
-        timestampBuffer[bufferIndex] = millis();
-        bufferIndex++;
-    }
 }
 
 // =================================================================
@@ -298,8 +309,9 @@ void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bo
     display.setCursor(0, 0);
     display.print("LIDAR ");
     display.print(wifiConnected ? "[WiFi]" : "[OFF]");
-    display.print(" Buf:");
-    display.println(bufferCount);
+    display.print(" ");
+    display.print(bufferCount);
+    display.println("s");
     display.drawFastHLine(0, 10, SCREEN_WIDTH, SSD1306_WHITE);
     
     if (valid) {
@@ -312,7 +324,7 @@ void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bo
         // Show average distance
         display.setTextSize(1);
         display.setCursor(0, 35);
-        display.print("Avg: ");
+        display.print("1s Avg: ");
         display.print(avg_distance);
         display.print(" mm (");
         display.print(avg_distance / 10.0, 1);
@@ -325,10 +337,10 @@ void displayDistance(uint16_t distance_mm, uint16_t avg_distance, bool valid, bo
         
         // Upload progress (buffer fills every 10 seconds)
         display.setCursor(0, 58);
-        int progress = (bufferCount * 100) / MAX_BUFFER_SIZE;
-        display.print("Next upload: ");
-        display.print(progress);
-        display.println("%");
+        int progress = (bufferCount * 100) / MAX_SECOND_SAMPLES;
+        display.print("Upload in: ");
+        display.print(10 - bufferCount);
+        display.println("s");
     } else {
         // Out of range message
         display.setTextSize(2);
@@ -352,39 +364,41 @@ void displayError(const char* message) {
 }
 
 // =================================================================
-// --- FIREBASE BULK UPLOAD ---
+// --- FIREBASE BULK UPLOAD (using 1-second averages) ---
 // =================================================================
 void uploadToFirebaseAsync() {
-    if (WiFi.status() != WL_CONNECTED || bufferIndex == 0) {
+    if (WiFi.status() != WL_CONNECTED || secondBufferIndex == 0) {
         return;
     }
     
     unsigned long startTime = millis();
     
-    // Calculate statistics from buffer
+    // Calculate statistics from 1-SECOND AVERAGES
+    // Each second has EQUAL weight in the final average
     uint32_t sum = 0;
-    uint16_t minDist = 65535;
-    uint16_t maxDist = 0;
+    uint16_t overallMin = 65535;
+    uint16_t overallMax = 0;
     
-    for (int i = 0; i < bufferIndex; i++) {
-        sum += distanceBuffer[i];
-        if (distanceBuffer[i] < minDist) minDist = distanceBuffer[i];
-        if (distanceBuffer[i] > maxDist) maxDist = distanceBuffer[i];
+    for (int i = 0; i < secondBufferIndex; i++) {
+        sum += secondAvgBuffer[i];           // Sum of 1-second averages
+        if (secondMinBuffer[i] < overallMin) overallMin = secondMinBuffer[i];
+        if (secondMaxBuffer[i] > overallMax) overallMax = secondMaxBuffer[i];
     }
     
-    uint16_t avgDist = sum / bufferIndex;
+    // Average of 1-second averages (each second counts equally!)
+    uint16_t avgDist = sum / secondBufferIndex;
     
     HTTPClient http;
     http.setTimeout(5000); // 5 second timeout
     
     // --- 1. Update "latest" with current stats ---
     JsonDocument latestDoc;
-    latestDoc["distance_mm"] = distanceBuffer[bufferIndex - 1]; // Most recent
-    latestDoc["distance_cm"] = distanceBuffer[bufferIndex - 1] / 10.0;
-    latestDoc["avg_mm"] = avgDist;
-    latestDoc["min_mm"] = minDist;
-    latestDoc["max_mm"] = maxDist;
-    latestDoc["readings"] = bufferIndex;
+    latestDoc["distance_mm"] = secondAvgBuffer[secondBufferIndex - 1]; // Most recent 1-sec avg
+    latestDoc["distance_cm"] = secondAvgBuffer[secondBufferIndex - 1] / 10.0;
+    latestDoc["avg_mm"] = avgDist;           // Average of all 1-second averages
+    latestDoc["min_mm"] = overallMin;        // Overall minimum
+    latestDoc["max_mm"] = overallMax;        // Overall maximum
+    latestDoc["seconds"] = secondBufferIndex; // Number of seconds
     latestDoc["timestamp"] = millis();
     
     String latestPayload;
@@ -403,19 +417,19 @@ void uploadToFirebaseAsync() {
         Serial.println(httpCode);
     }
     
-    // --- 2. Add batch to history ---
+    // --- 2. Add batch to history with ALL 1-second averages ---
     JsonDocument batchDoc;
     batchDoc["timestamp"] = millis();
-    batchDoc["count"] = bufferIndex;
+    batchDoc["seconds"] = secondBufferIndex;
     batchDoc["avg_mm"] = avgDist;
-    batchDoc["min_mm"] = minDist;
-    batchDoc["max_mm"] = maxDist;
+    batchDoc["min_mm"] = overallMin;
+    batchDoc["max_mm"] = overallMax;
     
-    // Add sample of readings (first, middle, last to save space)
-    JsonArray samples = batchDoc["samples"].to<JsonArray>();
-    samples.add(distanceBuffer[0]);
-    samples.add(distanceBuffer[bufferIndex / 2]);
-    samples.add(distanceBuffer[bufferIndex - 1]);
+    // Include ALL 1-second averages so short events are visible
+    JsonArray avgArray = batchDoc["second_averages"].to<JsonArray>();
+    for (int i = 0; i < secondBufferIndex; i++) {
+        avgArray.add(secondAvgBuffer[i]);
+    }
     
     String batchPayload;
     serializeJson(batchDoc, batchPayload);
@@ -427,7 +441,7 @@ void uploadToFirebaseAsync() {
     http.end();
     
     // Clear buffer after successful upload
-    bufferIndex = 0;
+    secondBufferIndex = 0;
     
     unsigned long uploadTime = millis() - startTime;
     Serial.print("Firebase bulk upload completed in ");
