@@ -18,8 +18,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // =================================================================
 // --- WiFi & Firebase Configuration (from KeepItUp reference) ---
 // =================================================================
-const char* ssid = "JioFiber_401_2.4Gz";         // Your WiFi network name
-const char* password = "Melvin420";              // Your WiFi password
+const char* ssid = "Airtel_AirtelHome";  //"JioFiber_401_2.4Gz";         // Your WiFi network name
+const char* password = "Airtel@Home2025";  //"Melvin420";              // Your WiFi password
 
 // Firebase Configuration
 const char* FIREBASE_HOST = "https://openware-ai-default-rtdb.firebaseio.com/ESP32/LIDAR";
@@ -34,7 +34,7 @@ VL53L0X lox;
 // --- Timing & Buffering Configuration ---
 // =================================================================
 // Display update interval (real-time feel)
-const unsigned long DISPLAY_INTERVAL = 100;      // Update display every 100ms
+const unsigned long DISPLAY_INTERVAL = 50;       // Update display every 50ms (faster!)
 unsigned long lastDisplayTime = 0;
 
 // Firebase bulk upload interval
@@ -187,7 +187,8 @@ void loop() {
         lastDisplayTime = currentTime;
     }
     
-    // --- 4. UPLOAD TO FIREBASE (every 10 seconds, bulk upload) ---
+    // --- 4. UPLOAD TO FIREBASE (DISABLED TEMPORARILY) ---
+    /*
     if (currentTime - lastFirebaseTime >= FIREBASE_INTERVAL) {
         if (secondBufferIndex > 0 && WiFi.status() == WL_CONNECTED) {
             Serial.print("Uploading ");
@@ -197,9 +198,10 @@ void loop() {
         }
         lastFirebaseTime = currentTime;
     }
+    */
     
     // Minimal delay - sensor timing budget handles the rest
-    delay(10);
+    delay(5);  // Reduced from 10ms for faster response
 }
 
 // =================================================================
@@ -295,9 +297,9 @@ void initVL53L0X() {
     lox.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
     lox.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
     
-    // FASTER timing budget: 50ms instead of 200ms
-    // Good balance between speed (~20 readings/sec) and accuracy
-    lox.setMeasurementTimingBudget(50000); // 50ms for faster readings
+    // FASTER timing budget: 33ms for ~30 readings/sec
+    // Prioritizes speed for responsive display
+    lox.setMeasurementTimingBudget(33000); // 33ms for faster readings
     
     Serial.println("High-speed long range mode enabled");
     
